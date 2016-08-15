@@ -1,0 +1,722 @@
+```{r global_options, echo=FALSE}
+ library(knitr)
+ knitr::opts_chunk$set(fig.width=12,fig.height=8,fig.path='Figs/',
+                      fig.align='center',tidy=TRUE,
+                      echo=FALSE,warning=FALSE,message=FALSE)
+```
+---
+title: "Wine"
+author: "Gabriel"
+date: "July 25, 2016"
+output: html_document
+---
+
+#Introduction
+
+Be they vintners, winos, or just junior associates looking to make a splash at the next team party, many thirst for a scrupulous analysis of what makes red wine good.  
+
+The following looks at Portuguese Vino Verdhes.  Eleven aspects, such as the pH, the acidity, and the chlorides of 1599 individual wine samples were measured.  Each wine was then sampled, presumably by wine experts,  and rated for quality on a (3--vinegar)-(8--1982 Cheateau Lafite Rothschild) scale.  
+
+Full disclosure: two assumptions are made in our models--the first being that the rating for quality is trustworthy i.e. objective.  Objective rating assumptions preserve the meaningfulness of the conclusions drawn from this data set.  The second assumption is that nothing outside the data set meaningfully debases our own data.  Good and bad wines are thus for a variety of (sometimes subjective) reasons but, understanding that this assumption is less airtight, we'll stick to the judgments made here. 
+
+May this analysis help quench your thirst.
+
+#Exploratory Analysis
+
+From Alekseeva's post on the same data, here are descriptions of the wine features studied.
+
+1 - fixed acidity: most acids involved with wine or fixed or nonvolatile (do not evaporate readily)
+2 - volatile acidity: the amount of acetic acid in wine, which at too high of levels can lead to an unpleasant, vinegar taste
+3 - citric acid: found in small quantities, citric acid can add ‘freshness’ and flavor to wines
+4 - residual sugar: the amount of sugar remaining after fermentation stops, it’s rare to find wines with less than 1 gram/liter and wines with greater than 45 grams/liter are considered sweet
+5 - chlorides: the amount of salt in the wine
+6 - free sulfur dioxide: the free form of SO2 exists in equilibrium between molecular SO2 (as a dissolved gas) and bisulfite ion; it prevents microbial growth and the oxidation of wine
+7 - total sulfur dioxide: amount of free and bound forms of S02; in low concentrations, SO2 is mostly undetectable in wine, but at free SO2 concentrations over 50 ppm, SO2 becomes evident in the nose and taste of wine
+8 - density: the density of water is close to that of water depending on the percent alcohol and sugar content
+9 - pH: describes how acidic or basic a wine is on a scale from 0 (very acidic) to 14 (very basic); most wines are between 3-4 on the pH scale
+10 - sulphates: a wine additive which can contribute to sulfur dioxide gas (S02) levels, wich acts as an antimicrobial and antioxidant
+11 - alcohol: the percent alcohol content of the wine
+
+We'll look first for anomalies in the summary statistics and structure of the data in a correlation matrix.  How do these variables stack up with one another?  
+
+```{r}
+library(Hmisc)
+library(graphics)
+library(gridExtra)
+library(GGally)
+library(ggplot2)
+library(DAAG)
+library(foreign)
+library(MASS)
+library(glmnet)
+library(reshape2)
+library(nnet)
+library(tidyr)
+library(dplyr)
+library(clusterGeneration)
+library(corrplot)
+
+# reading in a csv and outputting the summary and correlation statistics
+wine<-read.csv("/Users/administrator/Desktop/DAND/DataR/Project/wineQualityReds.csv")
+wine$X<-NULL
+summary(wine)
+```
+
+
+A few things of note--the density of the wine samples, measured with
+respect to the density of water, has a tight range, including one with
+density greater than that of water.  This varies with respect to the
+presence of alcohol and other sediment in the wine.  
+
+Many of the variables, including residual sugar, chlorides, free and total
+sulfur dioxide, sulphates, fixed and volatile acidity, and citric acid
+have outliers.  In other words, some of the wines contain a much larger
+portion of the above ingredients while most others contain a smaller
+amount.  
+
+How do the variables stack up with one another?  Below is a correlation matrix highlighting the most coorelated variables.
+
+```{r}
+# correlation plot with circled values greater than or less than .5
+ggcorr(wine, label = TRUE, hjust = 0.75) +
+  geom_point(size = 10, aes(color = coefficient > 0, alpha = abs(coefficient) > 0.5)) +
+  scale_alpha_manual(values = c("TRUE" = 0.25, "FALSE" = 0)) +
+  guides(color = FALSE, alpha = FALSE)
+```
+
+The correlation coefficients show some strong relationships such as
+fixed.acidity with citric acid and density, free and total sulfur dioxide, 
+and pH with fixed acidity, among others.  We'll examine some of these in 
+greater detail later.
+
+# What's in a Vintage Year?
+
+Do any aspects meaningfully affect wine quality?  Let's continue by looking at 
+each variable's correlation with quality.
+
+```
+                     quality
+fixed.acidity           0.12
+volatile.acidity       -0.39
+citric.acid             0.23
+residual.sugar          0.01
+chlorides              -0.13
+free.sulfur.dioxide    -0.05
+total.sulfur.dioxide   -0.19
+density                -0.17
+pH                     -0.06
+sulphates               0.25
+alcohol                 0.48
+
+n= 1599 
+
+```
+Alcohol, sulphates, and the relative lack of volatile acidity are most correlated with improvements in wine quality.  The other variables demonstrate, on balance, weak or no association with wine quality. Let's continue exploring the data. 
+
+
+#Vinegar vs. Rothschilds
+
+```{r}
+ggplot(data=wine, aes(x=quality))+
+  geom_bar()
+# creating a rating variable based on the 3-8 scale
+rating<-factor(wine$quality, labels=c("Awful","Bad","Below Average", "Above Average", "Good", "Excellent"))
+wine$rating<-rating
+# changing data frame order for plotting
+wine<-wine[ order(wine$quality), ]
+```
+
+Vino Verdhe's quality follows unimodal and leptokurtic distribution.  In other words, about one of out of one hundred wines are awful.  These should never mix with your Burgundy beef.  On the other end of the spectrum, the top wine percentile is worthy of, say, a meal with the one percent.  The rest?  Many are 'meh', some are worse than average, some are better than average. Let's press on.
+
+#Plots
+
+How variable is each variable?  
+```{r echo=FALSE}
+univ_cont <- function(feature) {
+    ggplot(data=wine, aes_string(x = feature)) + geom_histogram()
+}
+fa <- univ_cont("fixed.acidity")
+va <- univ_cont("volatile.acidity")
+ca <- univ_cont("citric.acid")
+rs <- univ_cont("residual.sugar")
+ch <- univ_cont("chlorides")
+fsd <- univ_cont("free.sulfur.dioxide")
+tsd <- univ_cont("total.sulfur.dioxide")
+dens <- univ_cont("density")
+ph <- univ_cont("pH")
+sul <- univ_cont("sulphates")
+al <- univ_cont("alcohol")
+
+grid.arrange(fa,va,ca,rs,ch,fsd,tsd,dens,ph,sul,al)
+```
+
+A few plots are singled out with analysis below.  We'll log-transform the chlorides and residual sugars variables.
+
+```{r echo=FALSE}
+# log transform x axis
+ch_log<-ch+scale_x_log10()
+rs_log<-rs+scale_x_log10()
+grid.arrange(ph, ch_log, rs_log)
+```
+
+pH, chlorides, and residual sugars show a fairly unimodal distribution,
+with residual sugar and chlorides having a few outliers.  pH seems to
+roughly point to a normal distribution, and chlorides and residual sugars
+are roughly lognormal, though perhaps more data is necessary to confirm
+this.  Many of the variables, including fixed acidity, free and total sulfur
+dioxide, and alcohol show a right skew.  
+
+```{r echo=FALSE}
+grid.arrange(fa,fsd,tsd,al)
+```
+
+Citric acid shows many zero values but doesn't have very modal
+distribution.  This makes sense as some wines may contain citrus fruit
+while others do not.  
+
+```{r echo=FALSE}
+ca
+```
+
+Let's examine these more closely by looking at other measures of wine 
+composition, as well as plotting quality and alcohol.
+
+```{r}
+# creating bivariate plots
+pl1<-ggplot(data=wine,aes(x=fixed.acidity, y=pH))+
+  geom_point(alpha = .5, size = 1, position = 'jitter')+
+  scale_colour_brewer(type = 'div', palette = "Greens")+geom_smooth()
+
+pl2<-ggplot(data=wine, aes(x=citric.acid, y=volatile.acidity))+
+  geom_point(alpha = .2, size = 1, position = 'jitter')+
+  scale_colour_brewer()+geom_smooth()
+
+pl3<-ggplot(data=wine, aes(x=citric.acid, y=fixed.acidity))+
+  geom_point(alpha = .5, size = 1, position = 'jitter')+geom_smooth()
+
+pl4<-ggplot(data=wine, aes(x=free.sulfur.dioxide,y=total.sulfur.dioxide))+
+  geom_point(alpha = .5, size = 1, position = 'jitter')+geom_smooth()
+
+pl5<-ggplot(data=wine, aes(x=quality, y=alcohol))+
+  geom_boxplot(aes(group=quality))
+
+pl6<-ggplot(data=wine, aes(x=alcohol))+
+  geom_histogram( alpha = .5, size = 1, binwidth = .1)+
+  scale_fill_discrete(guide = guide_legend(title = "Rating"))
+
+pl7<-ggplot(data=wine, aes(x=alcohol, y=quality))+
+  geom_point(alpha=.2, position = 'jitter')+
+  ylab('Wine Rating')+
+  xlab('Alcohol Content by Volume')
+
+grid.arrange(pl1, pl2, pl3, pl4, pl5, pl6)
+pl7
+```
+
+To note: the middle right plot suggests that better rated wines may have
+higher proportions of free sulfur dioxide to total sulfur dioxide, and
+that free sulfur dioxide is a necessary condition for total sulfur
+dioxide.  In addition, well-rated wine tends to have proportionally more
+alcohol, and volatile and fixed acidity correlate with a few other
+variables.   
+
+The middle right plot hints that better-rated wines may have higher
+proportions of free sulfur dioxide to total sulfur dioxide. We'll look
+at this in more detail later.   
+
+Despite the positive correlation between alcohol and quality, Vino Verdhes
+with less alcohol are more prevalent.  This could be for any number of
+reasons--for example, there could be unaccounted-for vintner bottom 
+line considerations outside of the data's purview.  We'll stick with what
+we know for this analysis.
+
+```{r}
+pl8<-ggplot(data=wine,aes(x=fixed.acidity, y=pH))+
+  geom_point(aes(color=rating), alpha = .5, size = 1, position = 'jitter')+
+  scale_colour_brewer(type = 'seq', palette = "YlOrRd")+
+  guides(col = guide_legend(reverse = TRUE))+
+  theme_dark()
+
+
+pl9<-ggplot(data=wine, aes(x=citric.acid, y=volatile.acidity))+
+  geom_point(aes(color=rating), alpha = .5, size = 1, position = 'jitter')+
+  scale_colour_brewer(type = 'seq', palette = "YlOrRd")+
+  guides(col = guide_legend(reverse = TRUE))+ 
+  theme_dark()
+
+
+pl10<-ggplot(data=wine, aes(x=citric.acid, y=fixed.acidity))+
+  geom_point(aes(color=rating), alpha = .5, size = 1, position = 'jitter')+
+  scale_colour_brewer(type = 'seq', palette = "YlOrRd")+
+  guides(col = guide_legend(reverse = TRUE))+ 
+  theme_dark()
+
+
+pl11<-ggplot(data=wine, aes(x=free.sulfur.dioxide,y=total.sulfur.dioxide))+
+  geom_point(aes(color=rating), alpha = .5, size = 1, position = 'jitter')+
+  scale_colour_brewer(type = 'seq', palette = "YlOrRd")+
+  guides(col = guide_legend(reverse = TRUE))+ 
+  theme_dark()
+
+
+pl12<-ggplot(data=wine, aes(x=quality, y=alcohol))+
+  geom_boxplot(aes(group=quality))
+
+
+pl13<-ggplot(data=wine, aes(x=alcohol))+
+  geom_histogram(aes(fill=quality), alpha = .5, size = 1, binwidth = .1)+
+  scale_fill_discrete(guide = guide_legend(title = "Rating"))
+
+
+pl14<-ggplot(data=wine, aes(x=alcohol, y=quality))+
+  geom_point(alpha=.2, position = 'jitter')+
+  ylab('Wine Rating')+
+  xlab('Alcohol Content by Volume')
+
+grid.arrange(pl8, pl9, pl10, pl11, pl12, pl13)
+pl14
+
+```
+
+We notice some trends, such as the increased acidity and lower pH
+corresponding with better quality ratings.  This confirms our earlier
+findings from the correlation matrix.  The middle right plot points
+suggests that quality may correlate with increased proportions of free to
+total sulfur dioxide.  Also, curiously, though more alcoholic wines are
+generally better-rated, as evidenced in the bottom left plot, fewer wines
+have more alcohol, as shown by the right skew of the
+wine distribution by alcohol count.  
+
+#Data Manipulation
+Let's add a column of the free sulfur dioxide as a percentage of the total
+sulfur dioxide. The 'sulfur dioxide proportion' summary statistics and 
+correlation with quality are below.
+
+```{r}
+# adding a free to total sulfur dioxide variable, checking the variable and correlation summaries
+sulfurwine<-wine
+sulfurwine$free_total<-(wine$free.sulfur.dioxide/wine$total.sulfur.dioxide)
+summary(sulfurwine$free_total)
+cor(sulfurwine$free_total, sulfurwine$quality)
+```
+
+There is a slight positive correlation between the sulfur dioxide
+proportions and quality.  Let's group and plot the wines by alcohol and
+rating.
+
+```{r}
+# creating boxplot of wines by quality
+frplot<-ggplot(data=sulfurwine, aes(x=quality, y=free_total))+
+         geom_boxplot(aes(group=quality))+
+         labs(title='Wine Quality according to Sulfur Dioxide Proportions',
+              y='Free over Total Sulfur Dioxide',x="Quality")
+frplot
+```
+
+The boxplot's results are mixed.  There's perhaps a modest monotonic relationship
+in the middle ranges of the data, but the best and worst wines don't jibe with
+on the 'proportion of free-to-total sulfur dioxide' scale, at all.  Does 
+removing the them improve the correlation?  
+
+```{r}
+# subsetting the wine data to exclude data at the far reaches of the distribution, checking the summary and correlation statistics
+normwine <- subset(sulfurwine, quality <=7 & quality >= 4) 
+summary(normwine$quality)
+cor(normwine$free_total, normwine$quality)
+```
+
+Proportions of free-to-total sulfur dioxide are slightly more correlated than 
+before.  We are borderline no better off.  Let's bark up another tree.
+
+Let's group and plot the wines by alcohol and rating.
+
+```{r}
+# grouping the alcohols by rating and plotting them with a geom_smooth
+# unbinds the data from its discrete quality rating
+library(dplyr)
+sumqual<-wine %>% group_by(alcohol)%>%
+  summarise(Average_rating= mean(quality),
+            Total=n())
+grqual<-as.data.frame(sumqual)
+
+alcplot<-ggplot(data=grqual, aes(x=alcohol, y=Average_rating))+
+         geom_point(aes(size=Total), alpha=.5, position='jitter')+
+         labs(title='Wine ABV vs Rating',x='Alcohol by Volume (%)')+
+         scale_y_continuous(name='Wine Rating', limits=c(2.9, 7.25))+
+         geom_smooth()
+
+alcplot
+```
+
+Clearly, a better-tasting Vino Verdhe is, ceteris paribus, more alcoholic than
+a worse-tasting Vino Verdhe.
+
+# Vino Verdhe Regressions--Generalized Linear Model
+
+Now that a few of the data have been visually represented,  let's train two 
+types of regression, a generalized linear model (glm) and logistic regression.
+We'll train the model on training data, and measure its precision on data the
+model hasn't seen before.  Remember, we're predicting a wine's rating.   
+ 
+Beginning with a glm--
+
+```{r echo=FALSE}
+# splitting into a training and test set
+smp_size <- floor(0.75 * nrow(wine))
+
+set.seed(3243)
+train_ind <- sample(seq_len(nrow(wine)), size = smp_size)
+train <- wine[train_ind, ]
+test <- wine[-train_ind, ]
+train$rating<-NULL
+test$rating<-NULL
+train$free_total<-NULL
+test$free_total<-NULL
+ytrain=train$quality
+xtrain=train[,c('fixed.acidity',"volatile.acidity","citric.acid","residual.sugar",
+                "chlorides","free.sulfur.dioxide","total.sulfur.dioxide","density",
+                "pH","sulphates",'alcohol')]
+xtest=test[,c('fixed.acidity',"volatile.acidity","citric.acid","residual.sugar",
+              "chlorides","free.sulfur.dioxide","total.sulfur.dioxide","density","pH",
+              "sulphates",'alcohol')]
+ytest=test$quality  
+
+# fitting a glm model
+winefit<-glm(quality~., data=train)
+summary(winefit)
+```
+
+A few notes--the model signals volatile acidity, chlorides, pH, sulphates, total
+sulfur dioxide, and alcohol as each having a statistically significant
+relationship (p<.01) with wine quality. In addition, the difference between 
+the null deviance and the residual deviance indicates that the model is an 
+improvement on the assumption that there is no relationship between the 
+predictors variables and the response variable.    
+
+Below are plots relating to the previous regression.
+
+```{r}
+par(mfrow=c(2,2))
+plot(winefit)
+```
+
+The residuals vs. fitted values are dispersed fairly evenly 
+along the y-axis, and the normal Q-Q plot runs mostly along the diagonal.
+The scale-location plot points to some model weakness in the lower range of 
+predicted values, especially for wines rated lower than five.
+
+Finally, few points are high leverage.  The model seems to approximate a 
+good fit.
+
+The x-axis of the residuals vs. fitted graph and the scale-location graph show
+that the model doesn't predict 3 or 8 wines.  The model predicts no vinegars or 
+Rothschilds.  Given that those comprise only a small percentage (~1.75%) of the total available wines, this is unsurprising.
+
+```{r}
+summary(winefit$fitted.values)
+
+```
+
+
+```{r}
+(sum((wine$quality==8))+sum((wine$quality==3)))/length(wine$quality)
+```
+
+
+# Generalized Linear Model
+
+Summary statistics for both the test data and the model are provided. 
+A linear model will predict values in between the discrete categories
+(3-vinegar)-(8-Chateau Lafite Rothschild) of the scale.        
+
+```{r echo=FALSE}
+# checking the results and extracting statistics for use in analysis
+results <-predict(winefit, s=0.1, test, type="response")
+summary(results$fit)
+summary(test$quality)
+```
+
+
+```{r echo=FALSE}
+# binding the results to the data frame to compute errors
+testdf1<-cbind(test,results)
+testdf1$se<-(testdf1$fit-testdf1$quality)^2
+# calculating a mean squared error
+MSE<-sum(testdf1$se)/length(testdf1$se)
+```
+
+```{r echo=FALSE}
+mean(results$se.fit)
+```
+
+It achieves a high precision mean squared error of two orders of magnitude
+smaller than the target variable. 
+
+
+```{r echo=FALSE}
+MSE
+```
+Finally, the mean squared error seems to provide a good fit, but we
+will review it later.
+
+#Logistic Regression
+
+
+Now we will run a multinomial logistic regression.  We'll feed the training 
+data through the regression, aggregate it's output as a weighted average 
+of its resultant probability estimations, and measure its accuracy on
+testing data.  
+
+
+```{r echo=FALSE, results="hide"}
+# training a multinomial model and looking at the results
+mod<-multinom(quality~., train)
+```
+
+```{r echo=FALSE}
+head(mod$fitted.values)
+```
+We can see that most wines are given high probabilities of being mostly
+either a five or a six, which jibes with our earlier findings of their 
+being many average wines and few excellent or terrible wines.
+
+Let's run our trained logistic regression on the held-out testing data.
+
+```{r echo=FALSE}
+# function that takes in a multinomial neural network model object and a test set of data and returns a set of predictions on the test set
+predictMNL <- function(model, newdata) {
+  if (is.element("nnet",class(model))) {
+    probs <- predict(model,newdata,"probs")
+    cum.probs <- t(apply(probs,1,cumsum))
+    vals <- runif(nrow(newdata))
+    tmp <- cbind(cum.probs,vals)
+    k <- ncol(probs)
+    ids <- 1 + apply(tmp,1,function(x) length(which(x[1:k] < x[k+1])))
+    return(ids)
+  }
+}
+
+# ran the model on our set
+y2 <- predictMNL(mod,test)
+adjustment<-2
+results1<-y2+adjustment
+testdf2 <- cbind(test,results1)
+testdf2$absolute.error<-(abs(testdf2$results1-testdf2$quality))
+testdf2$squared.error<-(testdf2$results1-testdf2$quality)^2
+MSE2<-sum(testdf2$squared.error)/length(testdf2$squared.error)
+MSE2
+```
+
+The discretely bound predictions of the multinomial model achieve a less 
+accurate mean squared error than the ordinary least squares model.   Let's
+take a look first at a few predictions on our testing data. 
+
+```{r echo=FALSE}
+predictions<-predict(mod, test, "probs")
+head(predictions)
+```
+
+As can be seen, the model estimates that most wines have a greater
+than 90% chance of being a five or a six.  Let's look at a few predictions next to the wine's actual rating.
+
+```{r echo=FALSE}
+# data frame binding to look at column results against one another
+comparedf<-cbind(predictions, test$quality)
+head(comparedf)
+```
+
+Given the relative infrequency of quality values at the extremes of the 
+training data distribition, in addition to a relatively small 
+test sample size (n=400), we expect a certain degree of central 
+tendency of the model's predictions ratings. Despite this, it 
+generally performs admirably on the test set.  More cross-validation 
+could serve to hone its predictions and compare it with other models. 
+
+What if we considered a weighted average 
+of the multinomial model estimations?  This reduces the discrete 
+bounding of the previous estimates, and aggregation through 
+averaging may increase the precision of the model estimate, 
+thereby reducing error.  Let's look at the weighted average model's error terms.
+
+```{r echo=FALSE}
+# creating a weighted average variable 
+predmelt<-(melt(predictions))
+predmelt$var3<-(predmelt$Var2*predmelt$value)
+grouped_pred<-group_by(predmelt, Var1)
+grouped_pred<-mutate(grouped_pred,
+       avg_rating=sum(var3))
+
+```
+
+```{r echo=FALSE}
+# new data frame with results
+testdf2<-setNames(cbind(rownames(testdf2), testdf2, row.names = NULL), c( "X", "fixed.acidity", "volatile.acidity", "citric.acid", "residual.sugar", "chlorides"," free.sulfur.dioxide","total.sulfur.dioxide", "density","pH", "sulphates", "alcohol", "quality", "results1", "absolute.error", "squared.error" ))
+
+grouped_pred<-data.frame(grouped_pred)
+
+# data frame w/ weighted average predictions
+grouped_pred<-setNames(cbind(rownames(grouped_pred), grouped_pred, row.names = NULL),  c("ID", "X", "spread_rating", "probability", "weighted_prob", "avg_rating"))
+
+# merging data frames w/ error terms
+merged<-merge(testdf2, grouped_pred)
+merged$squared.error<-(merged$avg_rating-merged$quality)^2
+summary(merged$squared.error)
+```
+
+They seem to approximate the data well, with low minimum, first quantile, and median values.  What's the model's mean squared error?
+
+```{r echo=FALSE}
+sumofsquares<-(sum((merged$avg_rating-merged$quality)^2))/6
+# calculating the MSE
+aggMSE<-sumofsquares/400
+aggMSE
+```
+
+Though their mean squared erros are closely related, the weighted average
+estimate turns out to have the lowest error yet.  Below is a histogram of the model's squared errors.
+
+```{r echo=FALSE}
+# plot of the multinomial squared errors
+sqplot<-ggplot(aes(x=squared.error), data=merged)+
+  geom_histogram(binwidth = .02)+
+  labs(title="Distribution of Multinomial Model Squared Errors",
+       x="Squared Error", y="Number of Wines")+
+  xlim(0,4)
+sqplot
+```
+
+The leptokurtosis of the error terms seems to validate the model's results
+as the squared error terms are close to zero in many cases.  Let's 
+verify how the error terms compare to guessing that each wine is a five,
+six, 5.5, 5.75, 5.25, 6.25, or 4.75. 
+
+```{r echo=FALSE}
+# squared errors plotted against guessing a number each time
+sum((test$quality-6)^2)/400
+sum((test$quality-5)^2)/400
+sum((test$quality-5.5)^2)/400
+sum((test$quality-5.75)^2)/400
+sum((test$quality-5.25)^2)/400
+sum((test$quality-6.25)^2)/400
+sum((test$quality-4.75)^2)/400
+```
+
+Every model outperforms these random guesses.
+
+#Reflection and Final Plots
+
+
+We looked for characteristics in the composition  of ~1600 Vino 
+Verdhe wines that correlated with the wine's quality rating.  We 
+started by making a correlation matrix.  Note to vintners and winos--aside
+from the free to total sulfur dioxide levels, alcohol by volume turned out
+to be the most correlated with wine quality of all the variables.
+
+We then plotted a few of the predictor variables and the output
+variable with boxplots and histograms.  
+We then employed a linear regression, ran a variable selection algorithm
+to create, shrink, and run a more parsimonious model, and then trained 
+and tested a multinomial logistic regression.  The logistic regression's
+results were then aggregated and tested on a held-out set of data.  
+While every model beat random guessing, the logistic model had the lowest
+mean squared error.  
+
+The scatter plot of free and total sulfur dioxide revealed both that the
+presence of total sulfur dioxide was dependent on at least some free
+sulfur dioxide, and that there may be a positive correlation between 
+the proportion of free-to-total sulfur dioxide and wine quality.  
+There was a weak positive correlation, which improved only slightly 
+when removing data at the tails of the quality distribution.   We did 
+not test the variable any further, and there may be room for further
+exploration in another project.  
+
+```{r}
+pl11<-pl11+
+  labs(title="Wines by Free and Total Sulfur Dioxide", y="Total Sulfur Dioxide (ppm)", x="Free Sulfur Dioxide (ppm)") 
+pl11
+```
+
+We scatter plotted wines grouped by alcohol content against their ratings.  
+This helped reduce some variance and made the data smoother and more
+robust to noise by treated a wine quality continuous variable and 
+alcohol like a categorical variable.  
+
+```{r}
+alcplot
+```
+
+This visualization lent more clarity to wine sample qualities' increasing
+with alcohol by volume.
+
+The absolute value of the distribution of the multinomial model's 
+error terms lent visibility to its results.  Its leptokurtosis 
+suggests a relatively high goodness of fit with the testing data.  
+
+```{r}
+sqplot+ylim(0, 250)
+```
+
+These results showed promise for the log-linear neural network's ability 
+to predict wine ratings based on its composition, leaving the door open 
+for more training and testing.
+
+# Opportunities for Further Analysis
+
+This analysis may have benefited from a few improvements.  More data 
+would have provided a more complete picture of the well- and poorly-rated
+wines, as there were few observations at the tails of the quality 
+ratings. In addition, more data about the relative composition of 
+Vino Verdhe and its taste profile may have helped explain the predictor
+and rating variables.  Additionally, more data with respect to 
+variability across years and grapes could help contextualize the data.
+Accounting for certain tastes or aromas in the quality measurement scale
+may have allowed for more robust relationships to be drawn between wine
+composition and quality.  
+
+A few limitations in the analysis leave room for further exploration.  
+Regarding the multinomial model, according to the Institute for Digital
+Research and Education at UCLA, "unlike logistic regression where there
+are many statistics for performing model diagnostics, it is not as 
+straightforward to do diagnostics with multinomial logistic regression
+models." More analysis could contextualize the findings of the multinomial
+model beyond the explanation of its precision as calculated by a weighted
+average.  For sample sizes, "multinomial regression uses a maximum
+likelihood estimation method, it requires a large sample size. It also
+uses multiple equations.  This implies that it requires an even larger
+sample size than ordinal or binary logistic regression."  Our multinomial,
+in addition to having not been validated by further sampling and testing,
+may have suffered from a relative scarcity of training data.    
+
+While the aggregated logistic regression results had lowest test error,
+the use of a mean squared error to explain the results of a model 
+whose output maps onto a polychotomous discrete categorical variable
+wasn't found in research of the topic and was unique to this analysis.  
+
+Methods could have been employed for model cross-validation, such as ridge
+regression or tree-based methods. In addition, more subsetting, training,
+and testing of each model would give more room for cross-validation. The
+results of the multinomial model weren't validated with any tests, and the
+results of our analysis are not meant to serve as predictive.
+
+
+#Reference
+For sulfur dioxide in wine--
+http://www.practicalwinery.com/janfeb09/page5.htm
+
+For cross-validation and glmnet--
+https://web.stanford.edu/~hastie/glmnet/glmnet_alpha.html
+
+For modelling in R--
+https://beckmw.wordpress.com/2013/03/04/visualizing-neural-networks-from-the-nnet-package/
+
+https://stat.ethz.ch/R-manual/R-patched/library/stats/html/predict.lm.html
+
+https://www.r-bloggers.com/how-to-multinomial-regression-models-in-r/
+
+http://www.ats.ucla.edu/stat/r/dae/mlogit.htm
+
+http://data.princeton.edu/R/linearModels.html
+
+http://www.statmethods.net/stats/regression.html
+
+http://www.ats.ucla.edu/stat/r/dae/rreg.htm
